@@ -7,115 +7,171 @@ using System.Threading;
 
 namespace ConsoleApp1
 {
+    [Cli.Doc(@"[[program]] recived message from source queue, doing some CPU-intensive usage operations replays with some outgoing messages to destination queue")]
+    [Cli.GenerateSample]
     internal class Program
     {
-        static void Main(string[] args)
+        [Cli.Named]
+        [Cli.SampleValue("8")]
+        public int Tasks = 8;
+
+        [Cli.Named]
+        [Cli.SampleValue("OpenWire")]
+        public BrokerConnectionProtocol Protocol = BrokerConnectionProtocol.OpenWire;
+
+        [Cli.Named]
+        [Cli.SampleValue("ssl://10.228.4.104:61617?transport.acceptInvalidBrokerCert=true")]
+        public string BrokerUri = string.Empty;
+
+        [Cli.Named]
+        [Cli.SampleValue("main")]
+        public string UserName = string.Empty;
+
+        [Cli.Named]
+        [Cli.Secret]
+        [Cli.EnvironmentVariable("USER_PASSWORD")] 
+        public string UserPassword = string.Empty;
+
+        [Cli.Named]
+        public int CpuUsageCyclesPerIncomingMessage = 1;
+
+        [Cli.Named]
+        [Cli.SampleValue("3")]
+        public int AnswersPerIncomingMessage = 1;
+
+        [Cli.Named]
+        [Cli.SampleValue("TO.KM.LAGS.TEST")]
+        public string Source = string.Empty;
+
+        [Cli.Named]
+        [Cli.SampleValue("TO.KM.LAGS.TEST2")]
+        public string Destination = string.Empty;
+
+        [Cli.Named]
+        public bool PrintMessages = true;
+
+        [Cli.Named]
+        [Cli.SampleValue("ClientAcknowledge")]
+        public AcknowledgementMode SessionAcknowledgmentMode = AcknowledgementMode.ClientAcknowledge;
+
+        [Cli.Named]
+        public bool Verbose = true;
+
+        [Cli.Named]
+        [Cli.SampleValue("Persistent")]
+        public MsgDeliveryMode MessageDeliveryMode = MsgDeliveryMode.Persistent;
+
+        [Cli.Named]
+        [Cli.SampleValue("180")]
+        public int SendRequestTimeoutInSec = 60 * 3;
+
+        [Cli.Named]
+        [Cli.SampleValue("10")]
+        public int NoMessagesReportingTimeoutInSec = 5 * 1;
+
+        public static void Main(string[] args)
         {
+            Program program = new Program();
             try
             {
-                const int MaxWaitCancellationMsecs = 10 * 60 * 1000;
-
-                if (args.Length < 1)
-                    throw new ArgumentException("Not enough arguments given");
-
-                if (!long.TryParse(args[0], out var tasks))
-                    throw new ArgumentException($"Unable to convert {args[0]} to tasks number");
-
-                var taskArgs = args.Skip(1).ToArray();
-                var cancellationTokenSource = new CancellationTokenSource();
-                var cancellationToken = cancellationTokenSource.Token;
-
-                Console.CancelKeyPress +=
-                    (sender, e) =>
-                    {
-                        e.Cancel = true;
-                        Console.WriteLine("Пользователь нажал Ctrl-C, выполняется завершения процесса...");
-                        cancellationTokenSource.Cancel();
-                    };
-
-                var taskList = new List<MessageReceiveTask>();
-                for (int taskId = 0; taskId < tasks; taskId++)
-                {
-                    var t = MakeMessageReceiveTask(taskId, taskArgs, cancellationToken);
-                    taskList.Add(t);
-                }
-
-                foreach (var t in taskList)
-                {
-                    ThreadPool.QueueUserWorkItem(_ =>
-                    {
-                        t.Exec();
-                    });
-                }
-
-                var waitResult = WaitHandle.WaitAll(new WaitHandle [] { cancellationToken.WaitHandle }, MaxWaitCancellationMsecs);
-
-                Console.WriteLine($"Main thread exits. waitResult={waitResult}");
+                Cli.ParseCommandLine(args, program);
+                program.Exec();
+            }
+            catch (Cli.PrintVersionException)
+            {
+                Cli.PrintVersion();
+            }
+            catch (Cli.PrintAppSettingsException)
+            {
+                Cli.PrintAppSettings(program);
+            }
+            catch (Cli.ProgramHelpException e)
+            {
+                Cli.PrintCommandLine(args);
+                Cli.PrintUsage(program, e.HelpType);
+            }
+            catch (Cli.CommandHelpException e)
+            {
+                Cli.PrintCommandUsage(e.Command, e.HelpType);
+            }
+            catch (Cli.UnknownCommandException e)
+            {
+                Console.WriteLine(e.Message);
+                Cli.PrintCommandLine(args);
+                Cli.PrintUsage(program);
+            }
+            catch (Cli.ArgumentParseException e)
+            {
+                Console.WriteLine(e.Message);
+                Cli.PrintCommandLine(args);
+                Cli.PrintCommandUsage(e.Command as Cli.ICommand);
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine($"Error: {e.Message}");
-                Console.Error.WriteLine($"Usage: mono_perf_test1 <tasks> <protocol> <broker_uri> <user> <password> <source> <destination> <CpuUsageCyclesPerIncomingMessage> <AnswersPerIncomingMessage>");
-                Environment.Exit(1);
+                Console.WriteLine(e.Message);
+                Console.WriteLine(e.StackTrace);
             }
         }
 
-
-
-        private static MessageReceiveTask MakeMessageReceiveTask(int taskId, string [] args, CancellationToken cancellationToken)
+        public void Exec()
         {
-            const int RequiredArguments = 9;
+            const int MaxWaitCancellationMsecs = 10 * 60 * 1000;
+
+            var cancellationTokenSource = new CancellationTokenSource();
+
+            Console.CancelKeyPress +=
+                (sender, e) =>
+                {
+                    e.Cancel = true;
+                    Console.WriteLine("Пользователь нажал Ctrl-C, выполняется завершения процесса...");
+                    cancellationTokenSource.Cancel();
+                };
+
+            var cancellationToken = cancellationTokenSource.Token;
+
+            var taskList = new List<MessageReceiveTask>();
+            for (int taskId = 0; taskId < this.Tasks; taskId++)
+            {
+                var t = MakeMessageReceiveTask(taskId, cancellationToken);
+                taskList.Add(t);
+            }
+
+            foreach (var t in taskList)
+            {
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    t.Exec();
+                });
+            }
+
+            var waitResult = WaitHandle.WaitAll(new WaitHandle[] { cancellationToken.WaitHandle }, MaxWaitCancellationMsecs);
+
+            Console.WriteLine($"Main thread exits. waitResult={waitResult}");
+
+        }
+
+        private MessageReceiveTask MakeMessageReceiveTask(int taskId, CancellationToken cancellationToken)
+        {
             MessageReceiveTask t = new MessageReceiveTask();
-
-            if (args.Length < RequiredArguments)
-                throw new ArgumentException("Not enough arguments given");
-
-            int nextArgId = 0;
-            var nextArgStr = args[nextArgId];
-
-            if (!BrokerConnectionProtocol.TryParse(nextArgStr, out t.Protocol))
-                throw new ArgumentException($"Unable to get {nameof(t.Protocol)} parameters from string {nextArgStr}");
-
-            nextArgStr = args[++nextArgId];
-            if (string.IsNullOrEmpty(nextArgStr))
-                throw new ArgumentException($"{nameof(t.BrokerUri)} must not be empty");
-            t.BrokerUri = nextArgStr;
-
-            nextArgStr = args[++nextArgId];
-            if (string.IsNullOrEmpty(nextArgStr))
-                throw new ArgumentException($"{nameof(t.UserName)} must not be empty");
-            t.UserName = nextArgStr;
-
-            nextArgStr = args[++nextArgId];
-            if (string.IsNullOrEmpty(nextArgStr))
-                throw new ArgumentException($"{nameof(t.UserPassword)} must not be empty");
-            t.UserPassword = nextArgStr;
-
-            nextArgStr = args[++nextArgId];
-            if (string.IsNullOrEmpty(nextArgStr))
-                throw new ArgumentException($"{nameof(t.Source)} must not be empty");
-            t.Source = nextArgStr;
-
-            nextArgStr = args[++nextArgId];
-            if (string.IsNullOrEmpty(nextArgStr))
-                throw new ArgumentException($"{nameof(t.Destination)} must not be empty");
-            t.Destination = nextArgStr;
-
-            nextArgStr = args[++nextArgId];
-            if (!int.TryParse(nextArgStr, out t.CpuUsageCyclesPerIncomingMessage))
-                throw new ArgumentException($"Unable to get {nameof(t.CpuUsageCyclesPerIncomingMessage)} parameters from string {nextArgStr}");
-
-            nextArgStr = args[++nextArgId];
-            if (!int.TryParse(nextArgStr, out t.AnswersPerIncomingMessage))
-                throw new ArgumentException($"Unable to get {nameof(t.AnswersPerIncomingMessage)} parameters from string {nextArgStr}");
-
-            nextArgStr = args[++nextArgId];
-            if (!bool.TryParse(nextArgStr, out t.PrintMessages))
-                throw new ArgumentException($"Unable to get {nameof(t.PrintMessages)} parameters from string {nextArgStr}");
+            t.TaskId = taskId;
+            t.CancellationToken = cancellationToken;
+            t.Protocol = this.Protocol;
+            t.BrokerUri = this.BrokerUri;
+            t.UserName = this.UserName;
+            t.UserPassword = this.UserPassword;
+            t.Source = this.Source;
+            t.Destination = this.Destination;
+            t.CpuUsageCyclesPerIncomingMessage = this.CpuUsageCyclesPerIncomingMessage;
+            t.AnswersPerIncomingMessage = this.AnswersPerIncomingMessage;
+            t.MessageDeliveryMode = this.MessageDeliveryMode;
+            t.SessionAcknowledgmentMode = this.SessionAcknowledgmentMode;
+            t.PrintMessages = this.PrintMessages;
+            t.Verbose = this.Verbose;
+            t.NoMessagesReportingTimeoutInSec = this.NoMessagesReportingTimeoutInSec;
+            t.SendRequestTimeoutInSec = this.SendRequestTimeoutInSec;   
 
             return t;
         }
-
 
         public enum BrokerConnectionProtocol
         {
@@ -174,10 +230,8 @@ namespace ConsoleApp1
                             IDestination source = SessionUtil.GetDestination(session, this.Source);
                             using (var consumer = session.CreateConsumer(source))
                             {
-
                                 if (this.Verbose)
                                     PrintMessage($"And destination: {this.Destination}");
-
                                 IDestination destination = SessionUtil.GetDestination(session, this.Destination);
                                 using (IMessageProducer producer = session.CreateProducer(destination))
                                 {
@@ -205,6 +259,7 @@ namespace ConsoleApp1
                                                 if (this.PrintMessages)
                                                     PrintMessage($"--> {answeringMessage.Text}!");
                                             }
+                                            incomingMessage.Acknowledge();
 
                                             if (IsTransactionalMode())
                                                 session.Commit();
