@@ -2,13 +2,8 @@
 using Apache.NMS.Util;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.Eventing.Reader;
 using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
-using static ConsoleApp1.Program.MessageReceiveTask;
 
 namespace ConsoleApp1
 {
@@ -69,7 +64,7 @@ namespace ConsoleApp1
 
         private static MessageReceiveTask MakeMessageReceiveTask(int taskId, string [] args, CancellationToken cancellationToken)
         {
-            const int RequiredArguments = 8;
+            const int RequiredArguments = 9;
             MessageReceiveTask t = new MessageReceiveTask();
 
             if (args.Length < RequiredArguments)
@@ -114,6 +109,10 @@ namespace ConsoleApp1
             if (!int.TryParse(nextArgStr, out t.AnswersPerIncomingMessage))
                 throw new ArgumentException($"Unable to get {nameof(t.AnswersPerIncomingMessage)} parameters from string {nextArgStr}");
 
+            nextArgStr = args[++nextArgId];
+            if (!bool.TryParse(nextArgStr, out t.PrintMessages))
+                throw new ArgumentException($"Unable to get {nameof(t.PrintMessages)} parameters from string {nextArgStr}");
+
             return t;
         }
 
@@ -134,14 +133,14 @@ namespace ConsoleApp1
             public string UserPassword = string.Empty;
             public int CpuUsageCyclesPerIncomingMessage = 1;
             public int AnswersPerIncomingMessage = 1;
-            public bool Verbose = true;
-            public AcknowledgementMode SessionAcknowledgmentMode = AcknowledgementMode.Transactional;
-            public MsgDeliveryMode MessageDeliveryMode = MsgDeliveryMode.Persistent;
             public string Source = string.Empty;
             public string Destination = string.Empty;
-            public bool PrintMessages = false;
+            public bool PrintMessages = true;
+            public AcknowledgementMode SessionAcknowledgmentMode = AcknowledgementMode.ClientAcknowledge;
+            public bool Verbose = true;
+            public MsgDeliveryMode MessageDeliveryMode = MsgDeliveryMode.Persistent;
             public int SendRequestTimeoutInSec = 60 * 3;
-            public int NoMessagesReportingTimeoutInSec = 60 * 1;
+            public int NoMessagesReportingTimeoutInSec = 5 * 1;
 
             public void Exec()
             {
@@ -188,13 +187,14 @@ namespace ConsoleApp1
 
                                     while (!this.CancellationToken.IsCancellationRequested)
                                     {
-
+                                        if (this.Verbose)
+                                            PrintMessage($"Wait new message...");
                                         var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
                                         if (incomingMessage != null)
                                         {
-                                            var incomingText = incomingMessage.ToString();
+                                            var incomingText = (incomingMessage is ITextMessage) ? (incomingMessage as ITextMessage).Text : "non-text messaage";
                                             if (this.PrintMessages)
-                                                PrintMessage($"--> {incomingText}!");
+                                                PrintMessage($"<-- {incomingText}!");
 
                                             CpuUsage(this.TaskId, this.CpuUsageCyclesPerIncomingMessage);
 
@@ -202,12 +202,12 @@ namespace ConsoleApp1
                                             {
                                                 var answeringMessage = session.CreateTextMessage($"Answer #{i} to {incomingText}");
                                                 producer.Send(answeringMessage);
-                                                if (IsTransactionalMode())
-                                                    session.Commit();
                                                 if (this.PrintMessages)
                                                     PrintMessage($"--> {answeringMessage.Text}!");
                                             }
 
+                                            if (IsTransactionalMode())
+                                                session.Commit();
                                         }
                                         else if (this.CancellationToken.IsCancellationRequested)
                                         {
