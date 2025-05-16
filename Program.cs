@@ -13,6 +13,7 @@ namespace ConsoleApp1
     {
         [Cli.Named]
         [Cli.SampleValue("8")]
+        [Cli.AllowedRange(1, 128)]
         public int Tasks = 8;
 
         [Cli.Named]
@@ -33,10 +34,12 @@ namespace ConsoleApp1
         public string UserPassword = string.Empty;
 
         [Cli.Named]
+        [Cli.AllowedRange(0, 100_000)]
         public int CpuUsageCyclesPerIncomingMessage = 1;
 
         [Cli.Named]
         [Cli.SampleValue("3")]
+        [Cli.AllowedRange(0, 1000)]
         public int AnswersPerIncomingMessage = 1;
 
         [Cli.Named]
@@ -63,11 +66,30 @@ namespace ConsoleApp1
 
         [Cli.Named]
         [Cli.SampleValue("180")]
+        [Cli.AllowedRange(1, 6000)]
         public int SendRequestTimeoutInSec = 60 * 3;
 
         [Cli.Named]
         [Cli.SampleValue("10")]
+        [Cli.AllowedRange(0, 6000)]
         public int NoMessagesReportingTimeoutInSec = 5 * 1;
+
+
+        [Cli.Named]
+        [Cli.AllowedRange(1, 86400)]
+        public int MaxWaitCancellationInSec = 30 * 60;
+
+        [Cli.Named]
+        [Cli.AllowedRange(0, 180*1000)]
+        public int RandomFactorForConnectionStartInMsecs = 100;
+
+        [Cli.Named]
+        [Cli.AllowedRange(0, 180 * 1000)]
+        public int RandomFactorForMessageReceiveInMsecs = 100;
+
+        [Cli.Named]
+        [Cli.AllowedRange(0, 10_000)]
+        public int RandomFactorForCpuUsageInCycles = 0;
 
         public static void Main(string[] args)
         {
@@ -115,8 +137,6 @@ namespace ConsoleApp1
 
         public void Exec()
         {
-            const int MaxWaitCancellationMsecs = 10 * 60 * 1000;
-
             var cancellationTokenSource = new CancellationTokenSource();
 
             Console.CancelKeyPress +=
@@ -144,7 +164,7 @@ namespace ConsoleApp1
                 });
             }
 
-            var waitResult = WaitHandle.WaitAll(new WaitHandle[] { cancellationToken.WaitHandle }, MaxWaitCancellationMsecs);
+            var waitResult = WaitHandle.WaitAll(new WaitHandle[] { cancellationToken.WaitHandle }, this.MaxWaitCancellationInSec * 1000);
 
             Console.WriteLine($"Main thread exits. waitResult={waitResult}");
 
@@ -169,6 +189,9 @@ namespace ConsoleApp1
             t.Verbose = this.Verbose;
             t.NoMessagesReportingTimeoutInSec = this.NoMessagesReportingTimeoutInSec;
             t.SendRequestTimeoutInSec = this.SendRequestTimeoutInSec;   
+            t.RandomFactorForConnectionStartInMsecs = this.RandomFactorForConnectionStartInMsecs;
+            t.RandomFactorForMessageReceiveInMsecs = this.RandomFactorForMessageReceiveInMsecs;
+            t.RandomFactorForCpuUsageInCycles = this.RandomFactorForCpuUsageInCycles;
 
             return t;
         }
@@ -197,11 +220,23 @@ namespace ConsoleApp1
             public MsgDeliveryMode MessageDeliveryMode = MsgDeliveryMode.Persistent;
             public int SendRequestTimeoutInSec = 60 * 3;
             public int NoMessagesReportingTimeoutInSec = 5 * 1;
+            public int RandomFactorForConnectionStartInMsecs = 1;
+            public int RandomFactorForMessageReceiveInMsecs = 1;
+            public int RandomFactorForCpuUsageInCycles = 1;
 
             public void Exec()
             {
+                var random = new Random();
                 try
                 {
+                    if (this.RandomFactorForConnectionStartInMsecs > 0)
+                    {
+                        var waitFor = random.Next(RandomFactorForConnectionStartInMsecs);
+                        if (this.Verbose)
+                            PrintMessage($"Randomized wait before connection start for {waitFor} msecs");
+                        Thread.Sleep(waitFor);
+                    }
+
                     if (this.Verbose)
                         PrintMessage($"Conneting to broker URI: {this.BrokerUri}");
 
@@ -241,8 +276,16 @@ namespace ConsoleApp1
 
                                     while (!this.CancellationToken.IsCancellationRequested)
                                     {
+                                        if (this.RandomFactorForMessageReceiveInMsecs > 0)
+                                        {
+                                            var waitFor = random.Next(this.RandomFactorForMessageReceiveInMsecs);
+                                            if (this.Verbose)
+                                                PrintMessage($"Random pause for getting new message for {waitFor} msecs");
+                                            Thread.Sleep(waitFor);
+                                        }
+
                                         if (this.Verbose)
-                                            PrintMessage($"Wait new message...");
+                                            PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
                                         var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
                                         if (incomingMessage != null)
                                         {
@@ -250,7 +293,15 @@ namespace ConsoleApp1
                                             if (this.PrintMessages)
                                                 PrintMessage($"<-- {incomingText}!");
 
-                                            CpuUsage(this.TaskId, this.CpuUsageCyclesPerIncomingMessage);
+                                            var cpuUsageCycles = this.CpuUsageCyclesPerIncomingMessage;
+
+                                            if (RandomFactorForCpuUsageInCycles > 0)
+                                            {
+                                                var extraCycles = random.Next(this.RandomFactorForCpuUsageInCycles);
+                                                cpuUsageCycles += extraCycles;
+                                            }
+
+                                            CpuUsage(this.TaskId, cpuUsageCycles);
 
                                             for (int i = 0; i < this.AnswersPerIncomingMessage; i++)
                                             {
