@@ -1,4 +1,5 @@
 ﻿using Apache.NMS;
+using Apache.NMS.ActiveMQ.Commands;
 using Apache.NMS.Util;
 using System;
 using System.Collections.Generic;
@@ -323,45 +324,8 @@ namespace ConsoleApp1
 
                                             if (incomingMessage != null)
                                             {
-                                                var incomingText = (incomingMessage is ITextMessage) ? (incomingMessage as ITextMessage).Text : "non-text messaage";
-                                                if (this.PrintMessages)
-                                                    PrintMessage($"<-- {incomingText}!");
-
-                                                var cpuUsageCycles = this.CpuUsageCyclesPerIncomingMessage;
-
-                                                if (RandomFactorForCpuUsageInCycles > 0)
-                                                {
-                                                    var extraCycles = random.Next(this.RandomFactorForCpuUsageInCycles);
-                                                    cpuUsageCycles += extraCycles;
-                                                }
-
-                                                stopWatch.Restart();
-                                                CpuUsage(this.TaskId, cpuUsageCycles);
-                                                stats.TookToProcessMessageTicks = stopWatch.ElapsedTicks;
-
-                                                stopWatch.Restart();
-                                                for (int i = 0; i < this.AnswersPerIncomingMessage; i++)
-                                                {
-                                                    var answeringMessage = session.CreateTextMessage($"Answer #{i} to {incomingText}");
-                                                    producer.Send(answeringMessage);
-                                                    if (this.PrintMessages)
-                                                        PrintMessage($"--> {answeringMessage.Text}!");
-                                                }
-                                                stats.TookToAnswerMessageTicks = stopWatch.ElapsedTicks;
-
-                                                stopWatch.Restart();
-                                                incomingMessage.Acknowledge();
-                                                stats.TookToAcknowledgeMessageTicks = stopWatch.ElapsedTicks;
-
-                                                stopWatch.Restart();
-                                                if (IsTransactionalMode())
-                                                    session.Commit();
-                                                stats.TookToCommitMessageProcessingTicks = stopWatch.ElapsedTicks;
-
+                                                ProcessMessage(random, stats, session, producer, incomingMessage);
                                                 UpdateAverageStats(this.AverageStats, stats);
-
-                                                //if (this.Verbose)
-                                                //    PrintMessage($"Stats: sleptBeforeReceiveMessageTicks={stats.SleptBeforeReceiveMessageTicks},tookToReceiveMessageTicks={stats.TookToReceiveMessageTicks},tookToProcessMessageTicks={stats.TookToProcessMessageTicks},tookToAnswerMessageTicks={stats.TookToAnswerMessageTicks},tookToAcknowledgeMessageTicks={stats.TookToAcknowledgeMessageTicks},tookToCommitMessageProcessingTicks={stats.TookToCommitMessageProcessingTicks}");
                                             }
                                             else
                                             {
@@ -392,6 +356,47 @@ namespace ConsoleApp1
                 {
                     EndEventHandle.Set();
                 }
+            }
+
+            private void ProcessMessage(Random random, ProcessingStats stats, ISession session, IMessageProducer producer, IMessage incomingMessage)
+            {
+                var stopWatch = Stopwatch.StartNew();
+
+                var incomingText = (incomingMessage is ITextMessage) ? (incomingMessage as ITextMessage).Text : "non-text messaage";
+                if (this.PrintMessages)
+                    PrintMessage($"<-- {incomingText}!");
+
+                var cpuUsageCycles = this.CpuUsageCyclesPerIncomingMessage;
+
+                if (RandomFactorForCpuUsageInCycles > 0)
+                {
+                    var extraCycles = random.Next(this.RandomFactorForCpuUsageInCycles);
+                    cpuUsageCycles += extraCycles;
+                }
+
+                stopWatch.Restart();
+                CpuUsage(this.TaskId, cpuUsageCycles);
+                stats.TookToProcessMessageTicks = stopWatch.ElapsedTicks;
+
+                stopWatch.Restart();
+                for (int i = 0; i < this.AnswersPerIncomingMessage; i++)
+                {
+                    var answeringMessage = session.CreateTextMessage($"Answer #{i} to {incomingText}");
+                    producer.Send(answeringMessage);
+                    if (this.PrintMessages)
+                        PrintMessage($"--> {answeringMessage.Text}!");
+                }
+                stats.TookToAnswerMessageTicks = stopWatch.ElapsedTicks;
+
+                stopWatch.Restart();
+                incomingMessage.Acknowledge();
+                stats.TookToAcknowledgeMessageTicks = stopWatch.ElapsedTicks;
+
+                stopWatch.Restart();
+                if (IsTransactionalMode())
+                    session.Commit();
+                stats.TookToCommitMessageProcessingTicks = stopWatch.ElapsedTicks;
+
             }
 
             public class ProcessingStats
