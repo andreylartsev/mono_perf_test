@@ -2,7 +2,9 @@
 using Apache.NMS.Util;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace ConsoleApp1
@@ -171,6 +173,11 @@ namespace ConsoleApp1
             var allWaitHandlesArray = allWaitHandlesList.ToArray();
             var waitResult = WaitHandle.WaitAll(allWaitHandlesArray, this.MaxWaitCancellationInSec * 1000);
 
+            foreach (var task in taskList)
+            {
+                task.PrintStats();
+            }
+
             Console.WriteLine($"Main thread exits. waitResult={waitResult}");
 
         }
@@ -229,6 +236,7 @@ namespace ConsoleApp1
             public int RandomFactorForMessageReceiveInMsecs = 1;
             public int RandomFactorForCpuUsageInCycles = 1;
             public ManualResetEvent EndEventHandle = new ManualResetEvent(false);
+            public ProcessingStats AverageStats = new ProcessingStats();
 
             public void Exec()
             {
@@ -284,6 +292,9 @@ namespace ConsoleApp1
 
                                         while (!this.CancellationToken.IsCancellationRequested)
                                         {
+                                            var stats = new ProcessingStats();
+                                            var stopWatch = Stopwatch.StartNew();
+
                                             if (this.RandomFactorForMessageReceiveInMsecs > 0)
                                             {
                                                 var waitFor = random.Next(this.RandomFactorForMessageReceiveInMsecs);
@@ -294,7 +305,12 @@ namespace ConsoleApp1
 
                                             if (this.Verbose)
                                                 PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
+
+                                            stats.SleptBeforeReceiveMessageTicks = stopWatch.ElapsedTicks;
+                                            
+                                            stopWatch.Restart();                                            
                                             var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
+                                            stats.TookToReceiveMessageTicks = stopWatch.ElapsedTicks;
 
                                             if (this.CancellationToken.IsCancellationRequested)
                                             {
@@ -319,8 +335,11 @@ namespace ConsoleApp1
                                                     cpuUsageCycles += extraCycles;
                                                 }
 
+                                                stopWatch.Restart();
                                                 CpuUsage(this.TaskId, cpuUsageCycles);
+                                                stats.TookToProcessMessageTicks = stopWatch.ElapsedTicks;
 
+                                                stopWatch.Restart();
                                                 for (int i = 0; i < this.AnswersPerIncomingMessage; i++)
                                                 {
                                                     var answeringMessage = session.CreateTextMessage($"Answer #{i} to {incomingText}");
@@ -328,10 +347,21 @@ namespace ConsoleApp1
                                                     if (this.PrintMessages)
                                                         PrintMessage($"--> {answeringMessage.Text}!");
                                                 }
-                                                incomingMessage.Acknowledge();
+                                                stats.TookToAnswerMessageTicks = stopWatch.ElapsedTicks;
 
+                                                stopWatch.Restart();
+                                                incomingMessage.Acknowledge();
+                                                stats.TookToAcknowledgeMessageTicks = stopWatch.ElapsedTicks;
+
+                                                stopWatch.Restart();
                                                 if (IsTransactionalMode())
                                                     session.Commit();
+                                                stats.TookToCommitMessageProcessingTicks = stopWatch.ElapsedTicks;
+
+                                                UpdateAverageStats(this.AverageStats, stats);
+
+                                                //if (this.Verbose)
+                                                //    PrintMessage($"Stats: sleptBeforeReceiveMessageTicks={stats.SleptBeforeReceiveMessageTicks},tookToReceiveMessageTicks={stats.TookToReceiveMessageTicks},tookToProcessMessageTicks={stats.TookToProcessMessageTicks},tookToAnswerMessageTicks={stats.TookToAnswerMessageTicks},tookToAcknowledgeMessageTicks={stats.TookToAcknowledgeMessageTicks},tookToCommitMessageProcessingTicks={stats.TookToCommitMessageProcessingTicks}");
                                             }
                                             else
                                             {
@@ -363,11 +393,47 @@ namespace ConsoleApp1
                     EndEventHandle.Set();
                 }
             }
+
+            public class ProcessingStats
+            {
+                public long SleptBeforeReceiveMessageTicks = 0;
+                public long TookToReceiveMessageTicks = 0;
+                public long CpuUsageCycles = 0;
+                public long TookToProcessMessageTicks = 0;
+                public long TookToAnswerMessageTicks = 0;
+                public long TookToAcknowledgeMessageTicks = 0;
+                public long TookToCommitMessageProcessingTicks = 0;
+                public long MessagesProcessed = 0;
+            };
+            private static void UpdateAverageStats(
+                ProcessingStats average, ProcessingStats addition)
+            {
+                average.SleptBeforeReceiveMessageTicks = UpdateAverageValue(average.MessagesProcessed, average.SleptBeforeReceiveMessageTicks, addition.SleptBeforeReceiveMessageTicks);
+                average.TookToReceiveMessageTicks = UpdateAverageValue(average.MessagesProcessed, average.TookToReceiveMessageTicks, addition.TookToReceiveMessageTicks);
+                average.CpuUsageCycles = UpdateAverageValue(average.MessagesProcessed, average.CpuUsageCycles, addition.CpuUsageCycles);
+                average.TookToProcessMessageTicks = UpdateAverageValue(average.MessagesProcessed, average.TookToProcessMessageTicks, addition.TookToProcessMessageTicks);
+                average.TookToAnswerMessageTicks = UpdateAverageValue(average.MessagesProcessed, average.TookToAnswerMessageTicks, addition.TookToAnswerMessageTicks);
+                average.TookToAcknowledgeMessageTicks = UpdateAverageValue(average.MessagesProcessed, average.TookToAcknowledgeMessageTicks, addition.TookToAcknowledgeMessageTicks);
+                average.TookToCommitMessageProcessingTicks = UpdateAverageValue(average.MessagesProcessed, average.TookToCommitMessageProcessingTicks, addition.TookToCommitMessageProcessingTicks);
+                average.MessagesProcessed++;
+            }
+
+            private static long UpdateAverageValue(long items, long averageValue, long addValue)
+            {
+                return ((averageValue * items) + addValue) / (items + 1);
+            }
+
             private void PrintMessage(string message)
             {
                 const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss.ffffffzzz";
                 var timestamp = DateTimeOffset.Now;
                 Console.WriteLine($"{timestamp.ToString(TimestampFormat)} : {this.TaskId} : {message}");
+            }
+
+            public void PrintStats()
+            {
+                var stats = this.AverageStats;
+                PrintMessage($"Stats: messagesProcessed={stats.MessagesProcessed}, sleptBeforeReceiveMessageTicks={stats.SleptBeforeReceiveMessageTicks},tookToReceiveMessageTicks={stats.TookToReceiveMessageTicks},tookToProcessMessageTicks={stats.TookToProcessMessageTicks},tookToAnswerMessageTicks={stats.TookToAnswerMessageTicks},tookToAcknowledgeMessageTicks={stats.TookToAcknowledgeMessageTicks},tookToCommitMessageProcessingTicks={stats.TookToCommitMessageProcessingTicks}");
             }
 
             private bool IsTransactionalMode()
