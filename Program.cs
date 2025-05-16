@@ -143,17 +143,21 @@ namespace ConsoleApp1
                 (sender, e) =>
                 {
                     e.Cancel = true;
-                    Console.WriteLine("Пользователь нажал Ctrl-C, выполняется завершения процесса...");
+                    Console.WriteLine("User pressed Ctrl-C, finishing process...");
                     cancellationTokenSource.Cancel();
                 };
 
+            var allWaitHandlesList = new List<WaitHandle>();
             var cancellationToken = cancellationTokenSource.Token;
+            allWaitHandlesList.Add(cancellationToken.WaitHandle);
 
             var taskList = new List<MessageReceiveTask>();
+
             for (int taskId = 0; taskId < this.Tasks; taskId++)
             {
                 var t = MakeMessageReceiveTask(taskId, cancellationToken);
                 taskList.Add(t);
+                allWaitHandlesList.Add(t.EndEventHandle);
             }
 
             foreach (var t in taskList)
@@ -164,7 +168,8 @@ namespace ConsoleApp1
                 });
             }
 
-            var waitResult = WaitHandle.WaitAll(new WaitHandle[] { cancellationToken.WaitHandle }, this.MaxWaitCancellationInSec * 1000);
+            var allWaitHandlesArray = allWaitHandlesList.ToArray();
+            var waitResult = WaitHandle.WaitAll(allWaitHandlesArray, this.MaxWaitCancellationInSec * 1000);
 
             Console.WriteLine($"Main thread exits. waitResult={waitResult}");
 
@@ -223,127 +228,139 @@ namespace ConsoleApp1
             public int RandomFactorForConnectionStartInMsecs = 1;
             public int RandomFactorForMessageReceiveInMsecs = 1;
             public int RandomFactorForCpuUsageInCycles = 1;
+            public ManualResetEvent EndEventHandle = new ManualResetEvent(false);
 
             public void Exec()
             {
-                var random = new Random();
                 try
                 {
-                    if (this.RandomFactorForConnectionStartInMsecs > 0)
+                    var random = new Random();
+                    try
                     {
-                        var waitFor = random.Next(RandomFactorForConnectionStartInMsecs);
-                        if (this.Verbose)
-                            PrintMessage($"Randomized wait before connection start for {waitFor} msecs");
-                        Thread.Sleep(waitFor);
-                    }
-
-                    if (this.Verbose)
-                        PrintMessage($"Conneting to broker URI: {this.BrokerUri}");
-
-                    var connectionFactory = MakeConnectionFactory();
-                    using (var connection = connectionFactory.CreateConnection())
-                    {
-                        connection.Start();
-                        if (this.Verbose)
-                            PrintMessage($"Connected!");
-
-                        connection.ConnectionResumedListener +=
-                            () =>
-                            {
-                                if (this.Verbose)
-                                    PrintMessage($"Lost connection has been resumed!");
-                            };
-
-                        using (var session = connection.CreateSession(this.SessionAcknowledgmentMode))
+                        if (this.RandomFactorForConnectionStartInMsecs > 0)
                         {
+                            var waitFor = random.Next(RandomFactorForConnectionStartInMsecs);
                             if (this.Verbose)
-                                PrintMessage($"Created session in acknowledgment mode: {this.SessionAcknowledgmentMode}!");
+                                PrintMessage($"Randomized wait before connection start for {waitFor} msecs");
+                            Thread.Sleep(waitFor);
+                        }
 
+                        if (this.Verbose)
+                            PrintMessage($"Conneting to broker URI: {this.BrokerUri}");
+
+                        var connectionFactory = MakeConnectionFactory();
+                        using (var connection = connectionFactory.CreateConnection())
+                        {
+                            connection.Start();
                             if (this.Verbose)
-                                PrintMessage($"Using source: {this.Source}");
+                                PrintMessage($"Connected!");
 
-                            IDestination source = SessionUtil.GetDestination(session, this.Source);
-                            using (var consumer = session.CreateConsumer(source))
+                            connection.ConnectionResumedListener +=
+                                () =>
+                                {
+                                    if (this.Verbose)
+                                        PrintMessage($"Lost connection has been resumed!");
+                                };
+
+                            using (var session = connection.CreateSession(this.SessionAcknowledgmentMode))
                             {
                                 if (this.Verbose)
-                                    PrintMessage($"And destination: {this.Destination}");
-                                IDestination destination = SessionUtil.GetDestination(session, this.Destination);
-                                using (IMessageProducer producer = session.CreateProducer(destination))
+                                    PrintMessage($"Created session in acknowledgment mode: {this.SessionAcknowledgmentMode}!");
+
+                                if (this.Verbose)
+                                    PrintMessage($"Using source: {this.Source}");
+
+                                IDestination source = SessionUtil.GetDestination(session, this.Source);
+                                using (var consumer = session.CreateConsumer(source))
                                 {
-
-                                    producer.DeliveryMode = this.MessageDeliveryMode;
-                                    producer.RequestTimeout = TimeSpan.FromSeconds(SendRequestTimeoutInSec);
-
-                                    while (!this.CancellationToken.IsCancellationRequested)
+                                    if (this.Verbose)
+                                        PrintMessage($"And destination: {this.Destination}");
+                                    IDestination destination = SessionUtil.GetDestination(session, this.Destination);
+                                    using (IMessageProducer producer = session.CreateProducer(destination))
                                     {
-                                        if (this.RandomFactorForMessageReceiveInMsecs > 0)
+
+                                        producer.DeliveryMode = this.MessageDeliveryMode;
+                                        producer.RequestTimeout = TimeSpan.FromSeconds(SendRequestTimeoutInSec);
+
+                                        while (!this.CancellationToken.IsCancellationRequested)
                                         {
-                                            var waitFor = random.Next(this.RandomFactorForMessageReceiveInMsecs);
-                                            if (this.Verbose)
-                                                PrintMessage($"Random pause for getting new message for {waitFor} msecs");
-                                            Thread.Sleep(waitFor);
-                                        }
-
-                                        if (this.Verbose)
-                                            PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
-                                        var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
-                                        if (incomingMessage != null)
-                                        {
-                                            var incomingText = (incomingMessage is ITextMessage) ? (incomingMessage as ITextMessage).Text : "non-text messaage";
-                                            if (this.PrintMessages)
-                                                PrintMessage($"<-- {incomingText}!");
-
-                                            var cpuUsageCycles = this.CpuUsageCyclesPerIncomingMessage;
-
-                                            if (RandomFactorForCpuUsageInCycles > 0)
+                                            if (this.RandomFactorForMessageReceiveInMsecs > 0)
                                             {
-                                                var extraCycles = random.Next(this.RandomFactorForCpuUsageInCycles);
-                                                cpuUsageCycles += extraCycles;
+                                                var waitFor = random.Next(this.RandomFactorForMessageReceiveInMsecs);
+                                                if (this.Verbose)
+                                                    PrintMessage($"Random pause for getting new message for {waitFor} msecs");
+                                                Thread.Sleep(waitFor);
                                             }
 
-                                            CpuUsage(this.TaskId, cpuUsageCycles);
+                                            if (this.Verbose)
+                                                PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
+                                            var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
 
-                                            for (int i = 0; i < this.AnswersPerIncomingMessage; i++)
+                                            if (this.CancellationToken.IsCancellationRequested)
                                             {
-                                                var answeringMessage = session.CreateTextMessage($"Answer #{i} to {incomingText}");
-                                                producer.Send(answeringMessage);
+                                                if (this.Verbose)
+                                                    PrintMessage("Cancellation has is requested. Finising processing");
+                                                if (incomingMessage != null)
+                                                    incomingMessage.Acknowledge();
+                                                break;
+                                            }
+
+                                            if (incomingMessage != null)
+                                            {
+                                                var incomingText = (incomingMessage is ITextMessage) ? (incomingMessage as ITextMessage).Text : "non-text messaage";
                                                 if (this.PrintMessages)
-                                                    PrintMessage($"--> {answeringMessage.Text}!");
-                                            }
-                                            incomingMessage.Acknowledge();
+                                                    PrintMessage($"<-- {incomingText}!");
 
-                                            if (IsTransactionalMode())
-                                                session.Commit();
-                                        }
-                                        else if (this.CancellationToken.IsCancellationRequested)
-                                        {
-                                            if (this.Verbose)
-                                                PrintMessage("Received signal of program finishing!");
-                                            break;
-                                        }
-                                        else
-                                        {
-                                            if (this.Verbose)
-                                                PrintMessage("No new messages to answer");
+                                                var cpuUsageCycles = this.CpuUsageCyclesPerIncomingMessage;
+
+                                                if (RandomFactorForCpuUsageInCycles > 0)
+                                                {
+                                                    var extraCycles = random.Next(this.RandomFactorForCpuUsageInCycles);
+                                                    cpuUsageCycles += extraCycles;
+                                                }
+
+                                                CpuUsage(this.TaskId, cpuUsageCycles);
+
+                                                for (int i = 0; i < this.AnswersPerIncomingMessage; i++)
+                                                {
+                                                    var answeringMessage = session.CreateTextMessage($"Answer #{i} to {incomingText}");
+                                                    producer.Send(answeringMessage);
+                                                    if (this.PrintMessages)
+                                                        PrintMessage($"--> {answeringMessage.Text}!");
+                                                }
+                                                incomingMessage.Acknowledge();
+
+                                                if (IsTransactionalMode())
+                                                    session.Commit();
+                                            }
+                                            else
+                                            {
+                                                if (this.Verbose)
+                                                    PrintMessage("No new messages to answer");
+                                            }
                                         }
                                     }
-
+                                    if (this.Verbose)
+                                        PrintMessage("Producer closed!");
                                 }
                                 if (this.Verbose)
-                                    PrintMessage("Producer closed!");
+                                    PrintMessage("Consumer closed!");
                             }
                             if (this.Verbose)
-                                PrintMessage("Consumer closed!");
+                                PrintMessage("Session closed!");
                         }
                         if (this.Verbose)
-                            PrintMessage("Session closed!");
+                            PrintMessage("Connection to the broker closed!");
                     }
-                    if (this.Verbose)
-                        PrintMessage("Connection to the broker closed!");
+                    catch (Exception e)
+                    {
+                        PrintMessage(e.ToString());
+                    }
+
                 }
-                catch (Exception e)
+                finally 
                 {
-                    PrintMessage(e.ToString());
+                    EndEventHandle.Set();
                 }
             }
             private void PrintMessage(string message)
