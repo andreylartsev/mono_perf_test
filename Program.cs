@@ -115,21 +115,11 @@ namespace ConsoleApp1
                 Cli.PrintCommandLine(args);
                 Cli.PrintUsage(program, e.HelpType);
             }
-            catch (Cli.CommandHelpException e)
-            {
-                Cli.PrintCommandUsage(e.Command, e.HelpType);
-            }
-            catch (Cli.UnknownCommandException e)
-            {
-                Console.WriteLine(e.Message);
-                Cli.PrintCommandLine(args);
-                Cli.PrintUsage(program);
-            }
             catch (Cli.ArgumentParseException e)
             {
                 Console.WriteLine(e.Message);
                 Cli.PrintCommandLine(args);
-                Cli.PrintCommandUsage(e.Command as Cli.ICommand);
+                Cli.PrintUsage(program);
             }
             catch (Exception e)
             {
