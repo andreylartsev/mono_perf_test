@@ -8,6 +8,7 @@ using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace ConsoleApp1
@@ -16,6 +17,9 @@ namespace ConsoleApp1
     [Cli.GenerateSample]
     internal class Program
     {
+        [Cli.Named]
+        public bool PrintArgs = false;
+
         [Cli.Named]
         [Cli.SampleValue("8")]
         [Cli.AllowedRange(1, 128)]
@@ -105,6 +109,8 @@ namespace ConsoleApp1
             try
             {
                 Cli.ParseCommandLine(args, program);
+                if (program.PrintArgs)
+                    Cli.PrintArgs(program);
                 program.Exec();
             }
             catch (Cli.PrintVersionException)
@@ -152,7 +158,6 @@ namespace ConsoleApp1
 
             if (IsUnixPlatform)
             {
-
                 var signalHanlingTask = new SignalHandlingTask();
                 signalHanlingTask.SignalsToWait = this.HandleSignals.ToArray();
                 signalHanlingTask.CancellationToken = cancellationToken;
@@ -233,7 +238,7 @@ namespace ConsoleApp1
                     var signalArray = signalList.ToArray();
                     while (!CancellationToken.IsCancellationRequested)
                     {
-                        const int WaitTimeout = 3000;
+                        const int WaitTimeout = 1000;
                         int timeTaken = UnixSignal.WaitAny(signalArray, WaitTimeout);
                         if (timeTaken < WaitTimeout)
                         {
@@ -246,11 +251,8 @@ namespace ConsoleApp1
                                 }
                             }
                         }
-                        else
-                        {
-                            Console.WriteLine($"Signal handing timed out");
-                        }
                     }
+
                     Console.WriteLine($"Finished signal handling task");
                 }
                 finally
