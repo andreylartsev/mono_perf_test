@@ -1,14 +1,11 @@
 ﻿using Apache.NMS;
 using Apache.NMS.Util;
-using Mono.Posix;
 using Mono.Unix;
 using Mono.Unix.Native;
 using System;
 using System.Collections.Generic;
-using System.Configuration;
 using System.Diagnostics;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace ConsoleApp1
@@ -19,6 +16,9 @@ namespace ConsoleApp1
     {
         [Cli.Named]
         public bool PrintArgs = false;
+
+        [Cli.Named]
+        public bool UseListener = false;
 
         [Cli.Named]
         [Cli.SampleValue("8")]
@@ -168,7 +168,6 @@ namespace ConsoleApp1
                 });
             }
 
-
             var taskList = new List<MessageReceiveTask>();
 
             for (int taskId = 0; taskId < this.Tasks; taskId++)
@@ -268,6 +267,7 @@ namespace ConsoleApp1
         {
             MessageReceiveTask t = new MessageReceiveTask();
             t.TaskId = taskId;
+            t.UseListener = this.UseListener;
             t.CancellationToken = cancellationToken;
             t.Protocol = this.Protocol;
             t.BrokerUri = this.BrokerUri;
@@ -299,6 +299,7 @@ namespace ConsoleApp1
         public class MessageReceiveTask
         {
             public int TaskId = 0;
+            public bool UseListener = false;
             public CancellationToken CancellationToken;
             public BrokerConnectionProtocol Protocol = BrokerConnectionProtocol.OpenWire;
             public string BrokerUri = string.Empty;
@@ -378,49 +379,14 @@ namespace ConsoleApp1
                                         this.Producer.DeliveryMode = this.MessageDeliveryMode;
                                         this.Producer.RequestTimeout = TimeSpan.FromSeconds(SendRequestTimeoutInSec);
 
-                                        // consumer.Listener += new MessageListener(OnMessageReceive);
-
-                                        while (!this.CancellationToken.IsCancellationRequested)
+                                        if (this.UseListener)
                                         {
-                                            var stats = new ProcessingStats();
-                                            var stopWatch = Stopwatch.StartNew();
-
-                                            if (this.RandomFactorForMessageReceiveInMsecs > 0)
-                                            {
-                                                var waitFor = this.Random.Next(this.RandomFactorForMessageReceiveInMsecs);
-                                                if (this.Verbose)
-                                                    PrintMessage($"Random pause for getting new message for {waitFor} msecs");
-                                                Thread.Sleep(waitFor);
-                                            }
-
-                                            if (this.Verbose)
-                                                PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
-
-                                            stats.SleptBeforeReceiveMessageTicks = stopWatch.ElapsedTicks;
-
-                                            stopWatch.Restart();
-                                            var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
-                                            stats.TookToReceiveMessageTicks = stopWatch.ElapsedTicks;
-
-                                            if (this.CancellationToken.IsCancellationRequested)
-                                            {
-                                                if (this.Verbose)
-                                                    PrintMessage("Cancellation has is requested. Finising processing");
-                                                if (incomingMessage != null)
-                                                    incomingMessage.Acknowledge();
-                                                break;
-                                            }
-
-                                            if (incomingMessage != null)
-                                            {
-                                                ProcessMessage(this.Random, stats, this.Session, this.Producer, incomingMessage);
-                                                UpdateAverageStats(this.AverageStats, stats);
-                                            }
-                                            else
-                                            {
-                                                if (this.Verbose)
-                                                    PrintMessage("No new messages to answer");
-                                            }
+                                            consumer.Listener += new MessageListener(OnMessageReceive);
+                                            WaitCancellationTookenLoop();
+                                        }
+                                        else
+                                        {
+                                            MessageReceiveReplayLoop(consumer);
                                         }
                                     }
                                     finally
@@ -455,6 +421,70 @@ namespace ConsoleApp1
                 {
                     EndEventHandle.Set();
                 }
+            }
+
+            private void WaitCancellationTookenLoop()
+            {
+                PrintMessage("Waiting cancellation token started!");
+                while (true)
+                {
+                    var result = WaitHandle.WaitAny(new WaitHandle[] { this.CancellationToken.WaitHandle }, TimeSpan.FromSeconds(10));
+
+                    if (this.CancellationToken.IsCancellationRequested)
+                        break;
+
+                    PrintMessage($"Not cancelled yet! Messages processed for a while {this.AverageStats.MessagesProcessed}");
+                }
+                PrintMessage("Waiting cancellation token finished!");
+            }
+
+
+            private void MessageReceiveReplayLoop(IMessageConsumer consumer)
+            {
+                PrintMessage("Message receive loop has started!");
+                while (!this.CancellationToken.IsCancellationRequested)
+                {
+                    var stats = new ProcessingStats();
+                    var stopWatch = Stopwatch.StartNew();
+
+                    if (this.RandomFactorForMessageReceiveInMsecs > 0)
+                    {
+                        var waitFor = this.Random.Next(this.RandomFactorForMessageReceiveInMsecs);
+                        if (this.Verbose)
+                            PrintMessage($"Random pause for getting new message for {waitFor} msecs");
+                        Thread.Sleep(waitFor);
+                    }
+
+                    if (this.Verbose)
+                        PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
+
+                    stats.SleptBeforeReceiveMessageTicks = stopWatch.ElapsedTicks;
+
+                    stopWatch.Restart();
+                    var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
+                    stats.TookToReceiveMessageTicks = stopWatch.ElapsedTicks;
+
+                    if (this.CancellationToken.IsCancellationRequested)
+                    {
+                        if (this.Verbose)
+                            PrintMessage("Cancellation has is requested. Finising processing");
+                        if (incomingMessage != null)
+                            incomingMessage.Acknowledge();
+                        break;
+                    }
+
+                    if (incomingMessage != null)
+                    {
+                        ProcessMessage(this.Random, stats, this.Session, this.Producer, incomingMessage);
+                        UpdateAverageStats(this.AverageStats, stats);
+                    }
+                    else
+                    {
+                        if (this.Verbose)
+                            PrintMessage("No new messages to answer");
+                    }
+                }
+                PrintMessage("Message receive loop has finished!");
             }
 
             private void ProcessMessage(Random random, ProcessingStats stats, ISession session, IMessageProducer producer, IMessage incomingMessage)
@@ -511,7 +541,7 @@ namespace ConsoleApp1
                 {
                     if (this.Verbose)
                         PrintMessage("Cancellation has is requested. Finising processing");
-                    incomingMessage.Acknowledge();
+                    this.Session?.Rollback();
                     return;
                 }
 
