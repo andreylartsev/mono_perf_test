@@ -1,12 +1,11 @@
 ﻿using Apache.NMS;
-using Apache.NMS.ActiveMQ.Commands;
 using Apache.NMS.Util;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading;
+using Mono.Unix;
+using Mono.Unix.Native;
 
 namespace ConsoleApp1
 {
@@ -173,6 +172,25 @@ namespace ConsoleApp1
 
         }
 
+        private static bool IsUnitPlatform => Environment.OSVersion.Platform == PlatformID.Unix;
+
+        internal class SignalHandlingTask
+        {
+            public int[] SignalsToWait;
+
+            public SignalHandlingTask() { }
+
+            public void Exec()
+            {
+                var sigint = new UnixSignal(Signum.SIGINT);
+                var sigquit = new UnixSignal(Signum.SIGQUIT);
+                var sigterm = new UnixSignal(Signum.SIGTERM);
+            }
+
+        }
+
+
+
         private MessageReceiveTask MakeMessageReceiveTask(int taskId, CancellationToken cancellationToken)
         {
             MessageReceiveTask t = new MessageReceiveTask();
@@ -229,16 +247,19 @@ namespace ConsoleApp1
             public ManualResetEvent EndEventHandle = new ManualResetEvent(false);
             public ProcessingStats AverageStats = new ProcessingStats();
 
+            private IMessageProducer Producer = null;
+            private ISession Session = null;
+            private Random Random = new Random();
+
             public void Exec()
             {
                 try
                 {
-                    var random = new Random();
                     try
                     {
                         if (this.RandomFactorForConnectionStartInMsecs > 0)
                         {
-                            var waitFor = random.Next(RandomFactorForConnectionStartInMsecs);
+                            var waitFor = this.Random.Next(RandomFactorForConnectionStartInMsecs);
                             if (this.Verbose)
                                 PrintMessage($"Randomized wait before connection start for {waitFor} msecs");
                             Thread.Sleep(waitFor);
@@ -261,7 +282,8 @@ namespace ConsoleApp1
                                         PrintMessage($"Lost connection has been resumed!");
                                 };
 
-                            using (var session = connection.CreateSession(this.SessionAcknowledgmentMode))
+                            this.Session = connection.CreateSession(this.SessionAcknowledgmentMode);
+                            try
                             {
                                 if (this.Verbose)
                                     PrintMessage($"Created session in acknowledgment mode: {this.SessionAcknowledgmentMode}!");
@@ -269,17 +291,21 @@ namespace ConsoleApp1
                                 if (this.Verbose)
                                     PrintMessage($"Using source: {this.Source}");
 
-                                IDestination source = SessionUtil.GetDestination(session, this.Source);
-                                using (var consumer = session.CreateConsumer(source))
+                                IDestination source = SessionUtil.GetDestination(this.Session, this.Source);
+                                using (var consumer = this.Session.CreateConsumer(source))
                                 {
                                     if (this.Verbose)
                                         PrintMessage($"And destination: {this.Destination}");
-                                    IDestination destination = SessionUtil.GetDestination(session, this.Destination);
-                                    using (IMessageProducer producer = session.CreateProducer(destination))
+                                    IDestination destination = SessionUtil.GetDestination(this.Session, this.Destination);
+
+                                    this.Producer = this.Session.CreateProducer(destination);
+                                    try
                                     {
 
-                                        producer.DeliveryMode = this.MessageDeliveryMode;
-                                        producer.RequestTimeout = TimeSpan.FromSeconds(SendRequestTimeoutInSec);
+                                        this.Producer.DeliveryMode = this.MessageDeliveryMode;
+                                        this.Producer.RequestTimeout = TimeSpan.FromSeconds(SendRequestTimeoutInSec);
+
+                                        // consumer.Listener += new MessageListener(OnMessageReceive);
 
                                         while (!this.CancellationToken.IsCancellationRequested)
                                         {
@@ -288,7 +314,7 @@ namespace ConsoleApp1
 
                                             if (this.RandomFactorForMessageReceiveInMsecs > 0)
                                             {
-                                                var waitFor = random.Next(this.RandomFactorForMessageReceiveInMsecs);
+                                                var waitFor = this.Random.Next(this.RandomFactorForMessageReceiveInMsecs);
                                                 if (this.Verbose)
                                                     PrintMessage($"Random pause for getting new message for {waitFor} msecs");
                                                 Thread.Sleep(waitFor);
@@ -298,8 +324,8 @@ namespace ConsoleApp1
                                                 PrintMessage($"Wait before new message for {this.NoMessagesReportingTimeoutInSec} secs");
 
                                             stats.SleptBeforeReceiveMessageTicks = stopWatch.ElapsedTicks;
-                                            
-                                            stopWatch.Restart();                                            
+
+                                            stopWatch.Restart();
                                             var incomingMessage = consumer.Receive(TimeSpan.FromSeconds(NoMessagesReportingTimeoutInSec));
                                             stats.TookToReceiveMessageTicks = stopWatch.ElapsedTicks;
 
@@ -314,7 +340,7 @@ namespace ConsoleApp1
 
                                             if (incomingMessage != null)
                                             {
-                                                ProcessMessage(random, stats, session, producer, incomingMessage);
+                                                ProcessMessage(this.Random, stats, this.Session, this.Producer, incomingMessage);
                                                 UpdateAverageStats(this.AverageStats, stats);
                                             }
                                             else
@@ -324,14 +350,24 @@ namespace ConsoleApp1
                                             }
                                         }
                                     }
-                                    if (this.Verbose)
-                                        PrintMessage("Producer closed!");
+                                    finally
+                                    {
+                                        this.Producer?.Dispose();
+                                        this.Producer = null;
+                                        if (this.Verbose)
+                                            PrintMessage("Producer closed!");
+                                    }
                                 }
                                 if (this.Verbose)
                                     PrintMessage("Consumer closed!");
                             }
-                            if (this.Verbose)
-                                PrintMessage("Session closed!");
+                            finally
+                            {
+                                this.Session?.Dispose();
+                                this.Session = null;
+                                if (this.Verbose)
+                                    PrintMessage("Session closed!");
+                            }
                         }
                         if (this.Verbose)
                             PrintMessage("Connection to the broker closed!");
@@ -387,6 +423,35 @@ namespace ConsoleApp1
                     session.Commit();
                 stats.TookToCommitMessageProcessingTicks = stopWatch.ElapsedTicks;
 
+            }
+
+            private void OnMessageReceive(IMessage incomingMessage)
+            {
+                var stats = new ProcessingStats();
+
+                stats.SleptBeforeReceiveMessageTicks = 0;
+                stats.TookToReceiveMessageTicks = 0;
+
+                var stopWatch = Stopwatch.StartNew();
+
+                if (this.CancellationToken.IsCancellationRequested)
+                {
+                    if (this.Verbose)
+                        PrintMessage("Cancellation has is requested. Finising processing");
+                    incomingMessage.Acknowledge();
+                    return;
+                }
+
+                if (incomingMessage != null)
+                {
+                    ProcessMessage(this.Random, stats, this.Session, this.Producer, incomingMessage);
+                    UpdateAverageStats(this.AverageStats, stats);
+                }
+                else
+                {
+                    if (this.Verbose)
+                        PrintMessage("No new messages to answer");
+                }
             }
 
             public class ProcessingStats
