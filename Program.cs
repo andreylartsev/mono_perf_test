@@ -1,11 +1,14 @@
 ﻿using Apache.NMS;
 using Apache.NMS.Util;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Threading;
+using Mono.Posix;
 using Mono.Unix;
 using Mono.Unix.Native;
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
 
 namespace ConsoleApp1
 {
@@ -93,6 +96,9 @@ namespace ConsoleApp1
         [Cli.AllowedRange(0, 10_000)]
         public int RandomFactorForCpuUsageInCycles = 0;
 
+        [Cli.Named]
+        public Signum [] HandleSignals = { Signum.SIGUSR1, Signum.SIGUSR2 };
+
         public static void Main(string[] args)
         {
             Program program = new Program();
@@ -139,9 +145,24 @@ namespace ConsoleApp1
                     cancellationTokenSource.Cancel();
                 };
 
+
             var allWaitHandlesList = new List<WaitHandle>();
             var cancellationToken = cancellationTokenSource.Token;
             allWaitHandlesList.Add(cancellationToken.WaitHandle);
+
+            if (IsUnixPlatform)
+            {
+
+                var signalHanlingTask = new SignalHandlingTask();
+                signalHanlingTask.SignalsToWait = this.HandleSignals.ToArray();
+                signalHanlingTask.CancellationToken = cancellationToken;
+                allWaitHandlesList.Add(signalHanlingTask.EndEvent);
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    signalHanlingTask.Exec();
+                });
+            }
+
 
             var taskList = new List<MessageReceiveTask>();
 
@@ -172,21 +193,71 @@ namespace ConsoleApp1
 
         }
 
-        private static bool IsUnitPlatform => Environment.OSVersion.Platform == PlatformID.Unix;
+        private static bool IsUnixPlatform => Environment.OSVersion.Platform == PlatformID.Unix;
 
         internal class SignalHandlingTask
         {
-            public int[] SignalsToWait;
+            public Signum[] SignalsToWait;
+            public CancellationToken CancellationToken;
+            public ManualResetEvent EndEvent = new ManualResetEvent(false);
 
             public SignalHandlingTask() { }
 
             public void Exec()
             {
-                var sigint = new UnixSignal(Signum.SIGINT);
-                var sigquit = new UnixSignal(Signum.SIGQUIT);
-                var sigterm = new UnixSignal(Signum.SIGTERM);
-            }
+                try
+                {
+                    if (this.SignalsToWait == null)
+                        throw new InvalidOperationException("SignalsToWait must not be null");
 
+                    Console.WriteLine($"Started signal handling task:");
+                    foreach (var signalNum in this.SignalsToWait)
+                    {
+                        Console.WriteLine($"Handle signal = {signalNum}");
+                    }
+
+                    var signalList = new List<UnixSignal>();
+                    foreach (var sigNum in this.SignalsToWait)
+                    {
+                        try
+                        {
+                            var sigHandler = new UnixSignal(sigNum);
+                            signalList.Add(sigHandler);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error during creating unix signal handling: sigNum={sigNum}, execption={ex.ToString()}");
+                        }
+                    }
+
+                    var signalArray = signalList.ToArray();
+                    while (!CancellationToken.IsCancellationRequested)
+                    {
+                        const int WaitTimeout = 3000;
+                        int timeTaken = UnixSignal.WaitAny(signalArray, WaitTimeout);
+                        if (timeTaken < WaitTimeout)
+                        {
+                            foreach (var signal in signalArray)
+                            {
+                                if (signal.IsSet)
+                                {
+                                    Console.WriteLine($"Got signal #{signal.Signum}");
+                                    signal.Reset();
+                                }
+                            }
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Signal handing timed out");
+                        }
+                    }
+                    Console.WriteLine($"Finished signal handling task");
+                }
+                finally
+                {
+                    EndEvent.Set();
+                }
+            }
         }
 
 
