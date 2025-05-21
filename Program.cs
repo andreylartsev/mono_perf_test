@@ -160,7 +160,7 @@ namespace ConsoleApp1
             {
                 var signalHanlingTask = new SignalHandlingTask();
                 signalHanlingTask.SignalsToWait = this.HandleSignals.ToArray();
-                signalHanlingTask.CancellationToken = cancellationToken;
+                signalHanlingTask.CancellationTokenSource = cancellationTokenSource;
                 allWaitHandlesList.Add(signalHanlingTask.EndEvent);
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
@@ -202,25 +202,28 @@ namespace ConsoleApp1
         internal class SignalHandlingTask
         {
             public Signum[] SignalsToWait;
-            public CancellationToken CancellationToken;
+            public CancellationTokenSource CancellationTokenSource;
             public ManualResetEvent EndEvent = new ManualResetEvent(false);
 
             public SignalHandlingTask() { }
 
             public void Exec()
             {
+                const Signum GracefullShutdownSignal = Signum.SIGTERM;
                 try
                 {
                     if (this.SignalsToWait == null)
                         throw new InvalidOperationException("SignalsToWait must not be null");
+
 
                     Console.WriteLine($"Started signal handling task:");
                     foreach (var signalNum in this.SignalsToWait)
                     {
                         Console.WriteLine($"Handle signal = {signalNum}");
                     }
-
+                    var gracefullShutdownSignalHandler = new UnixSignal(GracefullShutdownSignal);
                     var signalList = new List<UnixSignal>();
+                    signalList.Add(gracefullShutdownSignalHandler);
                     foreach (var sigNum in this.SignalsToWait)
                     {
                         try
@@ -234,8 +237,9 @@ namespace ConsoleApp1
                         }
                     }
 
+                    var cancellationToken = this.CancellationTokenSource.Token;
                     var signalArray = signalList.ToArray();
-                    while (!CancellationToken.IsCancellationRequested)
+                    while (!cancellationToken.IsCancellationRequested)
                     {
                         const int WaitTimeout = 1000;
                         int timeTaken = UnixSignal.WaitAny(signalArray, WaitTimeout);
@@ -245,8 +249,17 @@ namespace ConsoleApp1
                             {
                                 if (signal.IsSet)
                                 {
-                                    Console.WriteLine($"Got signal #{signal.Signum}");
-                                    signal.Reset();
+                                    if (signal.Signum == GracefullShutdownSignal)
+                                    {
+                                        Console.WriteLine($"Got gracefull shutdown signal #{signal.Signum}. cancellation");
+                                        this.CancellationTokenSource.Cancel();
+                                        signal.Reset();
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine($"Got signal #{signal.Signum}. ignoring");
+                                        signal.Reset();
+                                    }
                                 }
                             }
                         }
@@ -381,8 +394,10 @@ namespace ConsoleApp1
 
                                         if (this.UseListener)
                                         {
-                                            consumer.Listener += new MessageListener(OnMessageReceive);
+                                            var messageListenerDelegate = new MessageListener(OnMessageReceive);
+                                            consumer.Listener += messageListenerDelegate;
                                             WaitCancellationTookenLoop();
+                                            consumer.Listener -= messageListenerDelegate;
                                         }
                                         else
                                         {
@@ -437,7 +452,34 @@ namespace ConsoleApp1
                 }
                 PrintMessage("Waiting cancellation token finished!");
             }
+            private void OnMessageReceive(IMessage incomingMessage)
+            {
+                if (this.CancellationToken.IsCancellationRequested)
+                {
+                    if (this.Verbose)
+                        PrintMessage("Cancellation has is requested. Rolling back transaction");
+                    this.Session?.Rollback();
+                    return;
+                }
 
+                var stats = new ProcessingStats();
+
+                stats.SleptBeforeReceiveMessageTicks = 0;
+                stats.TookToReceiveMessageTicks = 0;
+
+                var stopWatch = Stopwatch.StartNew();
+
+                if (incomingMessage != null)
+                {
+                    ProcessMessage(this.Random, stats, this.Session, this.Producer, incomingMessage);
+                    UpdateAverageStats(this.AverageStats, stats);
+                }
+                else
+                {
+                    if (this.Verbose)
+                        PrintMessage("Got null message");
+                }
+            }
 
             private void MessageReceiveReplayLoop(IMessageConsumer consumer)
             {
@@ -481,7 +523,7 @@ namespace ConsoleApp1
                     else
                     {
                         if (this.Verbose)
-                            PrintMessage("No new messages to answer");
+                            PrintMessage($"No new messages to answer. Processed messages so far {this.AverageStats.MessagesProcessed}");
                     }
                 }
                 PrintMessage("Message receive loop has finished!");
@@ -493,7 +535,10 @@ namespace ConsoleApp1
 
                 var incomingText = (incomingMessage is ITextMessage) ? (incomingMessage as ITextMessage).Text : "non-text messaage";
                 if (this.PrintMessages)
-                    PrintMessage($"<-- {incomingText}!");
+                {
+                    var nmsMessageId = incomingMessage.NMSMessageId;
+                    PrintMessage($"<-- {incomingText}/{nmsMessageId}");
+                }
 
                 var cpuUsageCycles = this.CpuUsageCyclesPerIncomingMessage;
 
@@ -526,35 +571,6 @@ namespace ConsoleApp1
                     session.Commit();
                 stats.TookToCommitMessageProcessingTicks = stopWatch.ElapsedTicks;
 
-            }
-
-            private void OnMessageReceive(IMessage incomingMessage)
-            {
-                var stats = new ProcessingStats();
-
-                stats.SleptBeforeReceiveMessageTicks = 0;
-                stats.TookToReceiveMessageTicks = 0;
-
-                var stopWatch = Stopwatch.StartNew();
-
-                if (this.CancellationToken.IsCancellationRequested)
-                {
-                    if (this.Verbose)
-                        PrintMessage("Cancellation has is requested. Finising processing");
-                    this.Session?.Rollback();
-                    return;
-                }
-
-                if (incomingMessage != null)
-                {
-                    ProcessMessage(this.Random, stats, this.Session, this.Producer, incomingMessage);
-                    UpdateAverageStats(this.AverageStats, stats);
-                }
-                else
-                {
-                    if (this.Verbose)
-                        PrintMessage("No new messages to answer");
-                }
             }
 
             public class ProcessingStats
