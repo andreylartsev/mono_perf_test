@@ -44,6 +44,7 @@ namespace ConsoleApp1
 
         [Cli.Named]
         [Cli.AllowedRange(0, 100_000)]
+        [Cli.SampleValue("500")]
         public int CpuUsageCyclesPerIncomingMessage = 1;
 
         [Cli.Named]
@@ -98,9 +99,11 @@ namespace ConsoleApp1
 
         [Cli.Named]
         [Cli.AllowedRange(0, 10_000)]
+        [Cli.SampleValue("100")]
         public int RandomFactorForCpuUsageInCycles = 0;
 
         [Cli.Named]
+        [Cli.SampleValue("SIGUSR1, SIGUSR2, SIGHUP")]
         public Signum [] HandleSignals = { Signum.SIGUSR1, Signum.SIGUSR2 };
 
         public static void Main(string[] args)
@@ -396,7 +399,7 @@ namespace ConsoleApp1
                                         {
                                             var messageListenerDelegate = new MessageListener(OnMessageReceive);
                                             consumer.Listener += messageListenerDelegate;
-                                            WaitCancellationTookenLoop();
+                                            WaitCancellationTokenLoop();
                                             consumer.Listener -= messageListenerDelegate;
                                         }
                                         else
@@ -438,12 +441,12 @@ namespace ConsoleApp1
                 }
             }
 
-            private void WaitCancellationTookenLoop()
+            private void WaitCancellationTokenLoop()
             {
                 PrintMessage("Waiting cancellation token started!");
                 while (true)
                 {
-                    var result = WaitHandle.WaitAny(new WaitHandle[] { this.CancellationToken.WaitHandle }, TimeSpan.FromSeconds(10));
+                    var result = WaitHandle.WaitAny(new WaitHandle[] { this.CancellationToken.WaitHandle }, TimeSpan.FromSeconds(this.NoMessagesReportingTimeoutInSec));
 
                     if (this.CancellationToken.IsCancellationRequested)
                         break;
